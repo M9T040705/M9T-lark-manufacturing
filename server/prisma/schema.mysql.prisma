@@ -1,0 +1,481 @@
+// 中小机械制造业数字化 SaaS 数据模型（MySQL 生产版，Docker/容器使用）
+// 本地开发零依赖请用 schema.prisma(SQLite)；本文件用于生产，长文本字段使用 @db.Text。
+// 多租户策略：共享库 + 行级隔离，业务表均带 tenantId。
+
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider = "mysql"
+  url      = env("DATABASE_URL")
+}
+
+// ============ 平台与租户 ============
+model Tenant {
+  id        String   @id @default(cuid())
+  code      String   @unique // 工厂/企业登录编码
+  name      String
+  plan      String   @default("standard") // standard / pro
+  status    String   @default("active") // active / suspended
+  contact   String?
+  phone     String?
+  createdAt DateTime @default(now())
+
+  users         User[]
+  customers     Customer[]
+  products      Product[]
+  boms          Bom[]
+  quotes        Quote[]
+  salesOrders   SalesOrder[]
+  workOrders    WorkOrder[]
+  workReports   WorkReport[]
+  inventories   Inventory[]
+  stockMoves    StockMove[]
+  inspections   Inspection[]
+  defects       Defect[]
+  approvals     Approval[]
+  payments      Payment[]
+  feishuConfig  FeishuConfig?
+  operationLogs OperationLog[]
+  departments   Department[]
+  agentDataSources AgentDataSource[]
+  agentConversations AgentConversation[]
+}
+
+model User {
+  id           String   @id @default(cuid())
+  tenantId     String?
+  tenant       Tenant?  @relation(fields: [tenantId], references: [id])
+  username     String
+  passwordHash String
+  name         String
+  // 角色：super_admin / boss / sales / manager / worker / warehouse / quality / hr / finance
+  role         String   @default("worker")
+  phone        String?
+  feishuOpenId  String? // 飞书 open_id，首次 SSO 登录时按手机号/姓名匹配后自动绑定
+  feishuUnionId String? // 飞书 union_id（同一开发者下跨应用）
+  active       Boolean  @default(true)
+  createdAt    DateTime @default(now())
+
+  reports      WorkReport[]
+  assignedWos  WorkOrder[]  @relation("WoAssignee")
+  inspections  Inspection[]
+  approvals    Approval[]   @relation("ApprovalApplicant")
+  handledApprovals Approval[] @relation("ApprovalApprover")
+  logs         OperationLog[]
+  departmentId String?
+  department   Department? @relation(fields: [departmentId], references: [id])
+
+  @@unique([tenantId, username])
+  @@unique([tenantId, feishuOpenId])
+}
+
+model FeishuConfig {
+  id          String  @id @default(cuid())
+  tenantId    String  @unique
+  tenant      Tenant  @relation(fields: [tenantId], references: [id])
+  appId       String?
+  appSecret   String?
+  verifyToken String?
+  encryptKey  String?
+  webhook     String? // 群机器人 webhook（预警/审批推送）
+  enabled     Boolean @default(false)
+  ssoEnabled  Boolean @default(false)
+}
+
+model OperationLog {
+  id        String   @id @default(cuid())
+  tenantId  String?
+  tenant    Tenant?  @relation(fields: [tenantId], references: [id])
+  userId    String?
+  user      User?    @relation(fields: [userId], references: [id])
+  action    String
+  entity    String
+  entityId  String?
+  detail    String? @db.Text
+  createdAt DateTime @default(now())
+}
+
+// ============ CRM ============
+model Customer {
+  id             String   @id @default(cuid())
+  tenantId       String
+  tenant         Tenant   @relation(fields: [tenantId], references: [id])
+  code           String
+  name           String
+  type           String   @default("end") // end 终端 / dealer 经销商
+  level          String   @default("B") // A / B / C
+  settlementType String?  // 月结 / 现结 ...
+  billingCycle   String?  // 对账周期
+  contact        String?
+  phone          String?
+  address        String?
+  remark         String?
+  createdAt      DateTime @default(now())
+
+  quotes      Quote[]
+  salesOrders SalesOrder[]
+  payments    Payment[]
+
+  @@unique([tenantId, code])
+}
+
+model Quote {
+  id         String   @id @default(cuid())
+  tenantId   String
+  tenant     Tenant   @relation(fields: [tenantId], references: [id])
+  quoteNo    String
+  customerId String
+  customer   Customer @relation(fields: [customerId], references: [id])
+  productId  String?
+  productName String
+  spec       String?
+  qty        Float    @default(1)
+  unitPrice  Float    @default(0)
+  amount     Float    @default(0)
+  status     String   @default("draft") // draft / sent / ordered / rejected
+  ownerId    String?
+  remark     String?
+  createdAt  DateTime @default(now())
+
+  salesOrders SalesOrder[]
+}
+
+model SalesOrder {
+  id           String   @id @default(cuid())
+  tenantId     String
+  tenant       Tenant   @relation(fields: [tenantId], references: [id])
+  orderNo      String
+  customerId   String
+  customer     Customer @relation(fields: [customerId], references: [id])
+  quoteId      String?
+  quote        Quote?   @relation(fields: [quoteId], references: [id])
+  productId    String?
+  productName  String
+  spec         String?
+  qty          Float    @default(1)
+  unitPrice    Float    @default(0)
+  amount       Float    @default(0)
+  deliveryDate DateTime?
+  // 待生产 / 生产中 / 已完工 / 已发货 / 已对账 / 延期
+  status       String   @default("pending")
+  remark       String?
+  createdAt    DateTime @default(now())
+
+  workOrders WorkOrder[]
+  payments   Payment[]
+
+  @@unique([tenantId, orderNo])
+}
+
+model Payment {
+  id         String   @id @default(cuid())
+  tenantId   String
+  tenant     Tenant   @relation(fields: [tenantId], references: [id])
+  customerId String
+  customer   Customer @relation(fields: [customerId], references: [id])
+  orderId    String?
+  order      SalesOrder? @relation(fields: [orderId], references: [id])
+  period     String? // 账期
+  amount     Float    @default(0)
+  paidAmount Float    @default(0)
+  payDate    DateTime?
+  status     String   @default("unpaid") // unpaid / paid / overdue
+  createdAt  DateTime @default(now())
+}
+
+// ============ 基础数据 / MES ============
+model Product {
+  id          String   @id @default(cuid())
+  tenantId    String
+  tenant      Tenant   @relation(fields: [tenantId], references: [id])
+  code        String
+  name        String
+  spec        String?
+  // raw 原料 / semi 半成品 / finished 成品
+  type        String   @default("finished")
+  unit        String   @default("件")
+  safetyStock Float    @default(0)
+  price       Float    @default(0)
+  drawing     String? // 图号
+  createdAt   DateTime @default(now())
+
+  boms        Bom[]
+  inventories Inventory[]
+  stockMoves  StockMove[]
+
+  @@unique([tenantId, code])
+}
+
+model Bom {
+  id          String   @id @default(cuid())
+  tenantId    String
+  tenant      Tenant   @relation(fields: [tenantId], references: [id])
+  bomNo       String
+  productId   String
+  product     Product  @relation(fields: [productId], references: [id])
+  version     String   @default("V1")
+  processRoute String? @db.Text // 工艺路线（工序，逗号分隔）
+  drawing     String?
+  remark      String?
+  createdAt   DateTime @default(now())
+
+  items       BomItem[]
+  workOrders  WorkOrder[]
+
+  @@unique([tenantId, bomNo])
+}
+
+model BomItem {
+  id         String @id @default(cuid())
+  tenantId   String
+  bomId      String
+  bom        Bom    @relation(fields: [bomId], references: [id], onDelete: Cascade)
+  materialId String
+  materialName String
+  qty        Float  @default(1)
+  unit       String @default("件")
+  sequence   Int    @default(1)
+}
+
+model WorkOrder {
+  id         String   @id @default(cuid())
+  tenantId   String
+  tenant     Tenant   @relation(fields: [tenantId], references: [id])
+  woNo       String
+  orderId    String?
+  order      SalesOrder? @relation(fields: [orderId], references: [id])
+  bomId      String?
+  bom        Bom?     @relation(fields: [bomId], references: [id])
+  productId  String?
+  productName String
+  spec       String?
+  qty        Float    @default(1)
+  finishedQty Float   @default(0)
+  badQty     Float    @default(0)
+  planStart  DateTime?
+  planEnd    DateTime?
+  // 待派工 / 生产中 / 已完工 / 延期
+  status     String   @default("pending")
+  assigneeId String?
+  assignee   User?    @relation("WoAssignee", fields: [assigneeId], references: [id])
+  team       String?
+  createdAt  DateTime @default(now())
+
+  reports     WorkReport[]
+  inspections Inspection[]
+
+  @@unique([tenantId, woNo])
+}
+
+model WorkReport {
+  id          String   @id @default(cuid())
+  tenantId    String
+  tenant      Tenant   @relation(fields: [tenantId], references: [id])
+  workOrderId String
+  workOrder   WorkOrder @relation(fields: [workOrderId], references: [id], onDelete: Cascade)
+  userId      String
+  user        User     @relation(fields: [userId], references: [id])
+  process     String? // 工序
+  workHours   Float    @default(0)
+  goodQty     Float    @default(0)
+  badQty      Float    @default(0)
+  machine     String? // 机台
+  batchNo     String? // 原料批次
+  reportTime  DateTime @default(now())
+}
+
+// ============ WMS ============
+model Inventory {
+  id        String  @id @default(cuid())
+  tenantId  String
+  tenant    Tenant  @relation(fields: [tenantId], references: [id])
+  productId String
+  product   Product @relation(fields: [productId], references: [id])
+  warehouse String  @default("默认仓")
+  batchNo   String?
+  qty       Float   @default(0)
+
+  @@unique([tenantId, productId, warehouse, batchNo])
+}
+
+model StockMove {
+  id        String   @id @default(cuid())
+  tenantId  String
+  tenant    Tenant   @relation(fields: [tenantId], references: [id])
+  moveNo    String
+  // in 入库 / out 出库 / pick 领料
+  type      String
+  productId String
+  product   Product  @relation(fields: [productId], references: [id])
+  qty       Float    @default(0)
+  batchNo   String?
+  warehouse String   @default("默认仓")
+  refType   String? // work_order / inspection ...
+  refNo     String?
+  operatorId String?
+  remark    String?
+  createdAt DateTime @default(now())
+}
+
+// ============ QMS ============
+model Inspection {
+  id          String   @id @default(cuid())
+  tenantId    String
+  tenant      Tenant   @relation(fields: [tenantId], references: [id])
+  inspNo      String
+  // incoming 来料 / process 工序 / final 成品
+  type        String
+  workOrderId String?
+  workOrder   WorkOrder? @relation(fields: [workOrderId], references: [id])
+  productId   String?
+  productName String?
+  batchNo     String?
+  qty         Float    @default(0)
+  defectQty   Float    @default(0)
+  // pass / fail
+  result      String   @default("pass")
+  inspectorId String?
+  inspector   User?    @relation(fields: [inspectorId], references: [id])
+  remark      String?
+  inspectTime DateTime @default(now())
+
+  defects Defect[]
+}
+
+model Defect {
+  id           String   @id @default(cuid())
+  tenantId     String
+  tenant       Tenant   @relation(fields: [tenantId], references: [id])
+  inspectionId String
+  inspection   Inspection @relation(fields: [inspectionId], references: [id], onDelete: Cascade)
+  category     String // 缺陷分类
+  qty          Float    @default(0)
+  // rework 返工 / scrap 报废 / accept 让步接收
+  handle       String   @default("rework")
+  closed       Boolean  @default(false)
+  note         String?
+  createdAt    DateTime @default(now())
+}
+
+// ============ OA ============
+model Approval {
+  id          String   @id @default(cuid())
+  tenantId    String
+  tenant      Tenant   @relation(fields: [tenantId], references: [id])
+  // leave 请假 / overtime 加班 / purchase 采购 / pick 领料 / scrap 报废 / order_change 订单变更 / expense 费用报销
+  type        String
+  title       String
+  applicantId String
+  applicant   User     @relation("ApprovalApplicant", fields: [applicantId], references: [id])
+  // pending / approved / rejected
+  status      String   @default("pending")
+  payload     String? @db.Text  // JSON 表单数据
+  approverId  String?
+  approver    User?    @relation("ApprovalApprover", fields: [approverId], references: [id])
+  approverComment String?
+  createdAt   DateTime @default(now())
+  approvedAt  DateTime?
+}
+
+// ============ 部门级数据隔离智能体 ============
+// 部门：数据隔离与"部门群 / 部门多维表"配置的载体
+model Department {
+  id            String   @id @default(cuid())
+  tenantId      String
+  tenant        Tenant   @relation(fields: [tenantId], references: [id])
+  // management 总经办 / sales 销售 / production 生产 / warehouse 仓储 / quality 质量 / hr 人事 / finance 财务
+  code          String
+  name          String
+  managerId     String?
+  // 预留：部门飞书群（后续建群后填入）
+  feishuChatId  String? // 部门群 open_chat_id：群内 @机器人问答、部门定向通知
+  feishuWebhook String? // 部门群自定义机器人 webhook（部门级预警，可选）
+  active        Boolean  @default(true)
+  createdAt     DateTime @default(now())
+
+  users         User[]
+  dataSources   AgentDataSource[]
+  conversations AgentConversation[]
+
+  @@unique([tenantId, code])
+}
+
+// 智能体数据源：内置业务库(BIZ_DB) 或 飞书多维表(FEISHU_BASE，后续接入各部门智能表)
+model AgentDataSource {
+  id             String   @id @default(cuid())
+  tenantId       String
+  tenant         Tenant   @relation(fields: [tenantId], references: [id])
+  departmentId   String?
+  department     Department? @relation(fields: [departmentId], references: [id])
+  name           String
+  // BIZ_DB 业务库（内置受控查询工具）/ FEISHU_BASE 飞书多维表 / DOC 文档（预留）
+  type           String   @default("BIZ_DB")
+  enabled        Boolean  @default(true)
+  // 预留：飞书多维表（智能表）连接参数
+  feishuAppToken String? // 多维表 app_token
+  feishuTableId  String? // table_id
+  feishuViewId   String? // view_id（可选）
+  syncKeyField   String? // 可选：业务主键字段名，用于回写/对齐
+  config         String? @db.Text // JSON：字段映射、过滤条件、附加参数
+  createdAt      DateTime @default(now())
+}
+
+// 智能体会话：创建时固化部门隔离上下文（departmentId），来源 channel（web / feishu_group）
+model AgentConversation {
+  id           String   @id @default(cuid())
+  tenantId     String
+  tenant       Tenant   @relation(fields: [tenantId], references: [id])
+  userId       String
+  departmentId String?
+  department   Department? @relation(fields: [departmentId], references: [id])
+  title        String
+  channel      String   @default("web") // web / feishu_group
+  createdAt    DateTime @default(now())
+  updatedAt    DateTime @updatedAt
+
+  messages     AgentMessage[]
+
+  @@index([tenantId, userId])
+}
+
+// 智能体消息：role=user/assistant/tool；toolCalls 记录本次调用的部门工具（审计可追溯）
+model AgentMessage {
+  id             String   @id @default(cuid())
+  conversationId String
+  conversation   AgentConversation @relation(fields: [conversationId], references: [id], onDelete: Cascade)
+  role           String
+  content        String @db.Text
+  toolCalls      String? @db.Text // JSON：调用的工具名、参数、命中条数
+  thinking       String? @db.Text // 思考过程（深度思考模式）
+  intent         String? @db.Text // 意图识别结果（JSON）
+  trace          String? @db.Text // 执行轨迹（JSON 数组）
+  tokens         Int      @default(0)
+  createdAt      DateTime @default(now())
+
+  @@index([conversationId])
+}
+
+// ============ RAG 知识库（部门隔离） ============
+// 标准化流水线：清洗 → 智能切片(重叠窗口) → 向量化 → 双路召回(关键词+向量) → 重排序
+model KnowledgeDoc {
+  id           String   @id @default(cuid())
+  tenantId     String
+  departmentId String?
+  department   Department? @relation(fields: [departmentId], references: [id])
+  title        String
+  sourceType   String   // feishu_group / feishu_base / sop_file / manual
+  sourceRef    String?
+  sectionPath  String?  // 章节路径溯源
+  content      String   @db.Text
+  chunkIndex   Int      @default(0)
+  chunkSize    Int      @default(500)
+  keywords     String?  // 关键词路召回
+  embedding    String?  @db.Text // 预留向量
+  sourceMeta   String?  @db.Text // 来源元数据
+  createdAt    DateTime @default(now())
+
+  @@index([tenantId, departmentId])
+  @@index([sourceType])
+}

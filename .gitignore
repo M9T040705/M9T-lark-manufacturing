@@ -1,0 +1,47 @@
+# 依赖
+node_modules/
+
+# 构建产物
+dist/
+*.tsbuildinfo
+
+# 环境变量（保留示例文件）
+.env
+.env.local
+.env.*.local
+!.env.example
+!.env.production.example
+
+# 数据库
+dev.db
+dev.db-journal
+*.db-shm
+*.db-wal
+
+# 上传文件
+uploads/
+
+# 日志
+*.log
+npm-debug.log*
+
+# 系统文件
+.DS_Store
+Thumbs.db
+
+# IDE
+.idea/
+.vscode/
+*.swp
+*.swo
+
+# 预览缓存
+.preview/
+
+# 压缩包
+*.zip
+
+# 临时文件
+*.tmp
+*.temp
+_check_*.js
